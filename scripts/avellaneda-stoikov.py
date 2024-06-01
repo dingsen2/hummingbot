@@ -4,6 +4,7 @@ from typing import Dict, List
 
 from hummingbot.connector.connector_base import ConnectorBase
 from hummingbot.core.data_type.common import OrderType, PriceType, TradeType
+from hummingbot.core.data_type.order_book import OrderBook
 from hummingbot.core.data_type.order_candidate import OrderCandidate
 from hummingbot.core.event.events import OrderFilledEvent
 from hummingbot.data_feed.candles_feed.candles_factory import CandlesConfig, CandlesFactory
@@ -67,6 +68,9 @@ class PMMAvallanedaStoikov(ScriptStrategyBase):
     # original price, fetch from source
     orig_price = 0
 
+    # The base_volume used to calculate the adjusted price
+    base_volume = 10
+
     # here we recognize base & quote. ETH is base and USDT is quote.
     base, quote = trading_pair.split('-')
 
@@ -75,6 +79,8 @@ class PMMAvallanedaStoikov(ScriptStrategyBase):
                                                       trading_pair=trading_pair,
                                                       interval=candles_interval,
                                                       max_records=max_records))
+
+    order_book = OrderBook(candles)
 
     # markets defines which order books (exchange / pair) to connect to. At least one exchange/pair needs to be
     # instantiated
@@ -168,6 +174,7 @@ class PMMAvallanedaStoikov(ScriptStrategyBase):
         return: the reservation price
         formula: r=s-q*gamma*sigma^2*(T-t)
         """
+        self.orig_price = self.calculate_vamp()
         res = self.orig_price - self.q * self.gamma * self.sigma ** 2 * self.time_left * 100
         return res
 
@@ -182,7 +189,29 @@ class PMMAvallanedaStoikov(ScriptStrategyBase):
         res += 2 * Decimal(1 + self.gamma / self.kappa).ln() / self.gamma
         return res
 
+    def calculate_volume_base(self):
+        """
+        This function can be modified to calculate the volume base dynamically.
+        """
+        return self.base_volume
+
+    def calculate_vwap(self, is_buy, base_volume):
+        vwap_result = self.connectors[self.exchange].get_vwap_for_volume(self.trading_pair, is_buy, base_volume)
+        return vwap_result.result_price
+
+    def calculate_vamp(self):
+        """
+        Returns the price of a hypothetical buy and sell or the base asset where the amount is {strategy.test_volume}
+        TODO: Here I'll use hummingbot's get_vwap function to calculate the volume adjusted base asset price.
+        """
+        self.base_volume = self.calculate_volume_base()
+        vwap_bit_price = self.calculate_vwap(True, self.base_volume)
+        vwap_ask_price = self.calculate_vwap(False, self.base_volume)
+        vamp = (vwap_bit_price + vwap_ask_price) / 2
+        return vamp
+
     def get_candles_with_features(self):
+        # FIXME: the update of NATR should happen within the calculate_sigma function
         candles_df = self.candles.candles_df
         # dingsen: here we are fetching the NATR as a signal of volatility
         candles_df.ta.natr(length=self.candles_length, scalar=1, append=True)
